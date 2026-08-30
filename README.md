@@ -11,6 +11,13 @@ place name through the mesh, find a least-cloud Sentinel-2 scene via STAC,
 compute the NDVI raster — and returns an NDVI card with vegetation `stats`
 (mean/min/max), which this filter relays.
 
+
+<!-- emergence-context -->
+Part of **[EmergenceSystem](https://github.com/EmergenceSystem)** — a distributed
+discovery network of small, single-source agents. This filter joins the em_pop gossip
+mesh and answers `POST /agent/query`; Emquest fans each query out to many filters in
+parallel and aggregates the results.
+
 ## Contract
 
 ```
