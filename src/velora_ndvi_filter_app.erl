@@ -1,65 +1,35 @@
 %%%-------------------------------------------------------------------
-%%% @doc velora_ndvi_filter OTP application.
+%%% @doc velora_ndvi_filter boot (application + supervisor).
 %%%
-%%% A thin Emergence adapter: it advertises a vegetation/NDVI capability
-%%% vector on the em_pop gossip mesh and, on POST /agent/query, forwards the
-%%% query to a running velora node (the "eyes of Emergence") with intent
-%%% "ndvi". velora does the heavy geocoding/STAC/raster-math work and returns
-%%% NDVI cards; this filter only relays them into the mesh.
+%%% A thin Emergence adapter: registers an NDVI/vegetation agent on the
+%%% em_filter mesh and forwards each query to a running velora node with intent
+%%% "ndvi". velora does the geocoding/STAC/NDVI raster math and returns cards;
+%%% this filter relays them (rewriting velora's host-relative URLs to absolute).
 %%%
-%%% Configuration keys (application env):
-%%%   pop_port   — em_pop gossip port      (default 9212)
-%%%   query_port — Cowboy HTTP query port  (default 9213)
-%%%   pop_seeds  — list of {Host, Port} seed peers (default [])
-%%%   velora_url — velora /agent/query endpoint
-%%%                (default "http://127.0.0.1:8080/agent/query")
+%%% Follows the current em_filter agent model (em_filter:start_agent/3): the
+%%% framework owns the em_disco WebSocket connection, JWT auth and em_pop node;
+%%% the handler module supplies handle/2 + base_capabilities/0.
 %%% @end
 %%%-------------------------------------------------------------------
 -module(velora_ndvi_filter_app).
 -behaviour(application).
+-behaviour(supervisor).
 
--export([start/2, stop/1]).
+-export([start/2, stop/1, init/1]).
 
-start(_StartType, _StartArgs) ->
-    case velora_ndvi_filter_sup:start_link() of
-        {ok, Pid} ->
-            ok = start_pop_and_http(),
-            {ok, Pid};
-        Error ->
-            Error
-    end.
+start(_Type, _Args) ->
+    {ok, Pid} = supervisor:start_link({local, velora_ndvi_filter_boot_sup},
+                                      ?MODULE, []),
+    _ = application:ensure_all_started(em_filter),
+    _ = em_filter:start_agent(velora_ndvi_filter, velora_ndvi_filter_handler,
+          #{pop_port     => 9212,
+            query_port   => 9213,
+            capabilities => velora_ndvi_filter_handler:base_capabilities(),
+            pop_peers    => [{"localhost", 9101}],
+            pop_role     => leaf}),
+    {ok, Pid}.
 
-stop(_State) ->
-    catch cowboy:stop_listener(velora_ndvi_filter_query_listener),
-    catch em_pop_sup:stop_node(velora_ndvi_filter),
-    ok.
+stop(_State) -> ok.
 
-start_pop_and_http() ->
-    PopPort   = application:get_env(velora_ndvi_filter, pop_port,   9212),
-    QueryPort = application:get_env(velora_ndvi_filter, query_port, 9213),
-    Seeds     = application:get_env(velora_ndvi_filter, pop_seeds,  []),
-    Vec = em_filter_vec:from_capabilities(
-              [<<"ndvi">>, <<"vegetation">>, <<"agriculture">>, <<"greenness">>,
-               <<"satellite">>, <<"geo">>, <<"raster">>, <<"remote-sensing">>]),
-    catch em_pop_sup:stop_node(velora_ndvi_filter),
-    catch cowboy:stop_listener(velora_ndvi_filter_query_listener),
-    {ok, PopPid} = em_pop_sup:start_node(velora_ndvi_filter, #{
-        port            => PopPort,
-        query_port      => QueryPort,
-        vector          => Vec,
-        max_peers       => 100,
-        gossip_interval => 5_000
-    }),
-    lists:foreach(
-        fun({H, P}) -> catch em_pop_node:add_peer(PopPid, H, P) end,
-        Seeds),
-    Dispatch = cowboy_router:compile([
-        {'_', [{"/agent/query", em_filter_http,
-                #{server => velora_ndvi_filter_server}}]}
-    ]),
-    {ok, _} = cowboy:start_clear(velora_ndvi_filter_query_listener,
-                                  [{port, QueryPort}],
-                                  #{env => #{dispatch => Dispatch}}),
-    logger:notice("[velora_ndvi_filter] gossip port ~w  query port ~w",
-                  [PopPort, QueryPort]),
-    ok.
+init([]) ->
+    {ok, {#{strategy => one_for_one, intensity => 1, period => 5}, []}}.

@@ -9,9 +9,16 @@
 %%% @end
 %%%-------------------------------------------------------------------
 -module(velora_ndvi_filter_handler).
--export([query/1, handle/2]).
+-export([query/1, handle/2, base_capabilities/0]).
 
 -define(INTENT, <<"ndvi">>).
+
+%% @doc Capability vector advertised to the mesh (em_disco routing).
+-spec base_capabilities() -> [binary()].
+base_capabilities() ->
+    em_filter:base_capabilities() ++
+        [<<"ndvi">>, <<"vegetation">>, <<"agriculture">>, <<"greenness">>,
+         <<"satellite">>, <<"geo">>, <<"raster">>, <<"remote-sensing">>].
 
 %% @doc Forward the query to velora and return its result cards.
 -spec query(binary()) -> [map()].
@@ -31,10 +38,16 @@ query(Query) when is_binary(Query) ->
     end.
 
 %% @doc em_filter handle/2 contract (stateless).
--spec handle(binary(), term()) -> {binary(), term()}.
-handle(Query, Memory) ->
-    Result = iolist_to_binary(json:encode(query(Query))),
-    {Result, Memory}.
+-spec handle(binary(), term()) -> {[map()], term()}.
+handle(Body, Memory) ->
+    {query(extract_query(Body)), Memory}.
+
+%% Pull the query string out of the mesh request body.
+extract_query(Body) ->
+    try json:decode(Body) of
+        M when is_map(M) -> maps:get(<<"value">>, M, maps:get(<<"query">>, M, <<>>));
+        _                -> Body
+    catch _:_ -> Body end.
 
 %% velora's cards carry host-relative paths (`/jobs/:id`, `/tiles/..`) because
 %% velora doesn't know its public hostname. As the mesh egress we rewrite them to
